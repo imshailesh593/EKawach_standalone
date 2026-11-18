@@ -1,0 +1,3 @@
+ekavach_id,mobileOwner,educationStatus,insuranceScheme,smokeOrConsumeGutka,waist,physicalActivity150Min,bpDiabetesHeartHistory,shortnessOfBreath,address1
+A330047742N,SELF,string:701,false,NEVER,FIRST,ATLEAST_150,no,no,
+A330052917N,FAMILY_MEMBER,,true,IN_PAST,GT90,LESS_THAN_150,yes,no,Brahampuri

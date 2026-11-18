@@ -1,0 +1,21 @@
+# SECRETS - never commit
+vendor_tools/*.pem
+vendor_tools/public_key.b64
+vendor_tools/issued_licenses.json
+vendor_tools/release/
+deliver/
+*.key
+accounts.json
+admin.json
+config.json
+history.db
+
+# build output
+build/
+dist/
+installer/output/
+*.spec
+build.log
+__pycache__/
+*.pyc
+dryrun_*.png

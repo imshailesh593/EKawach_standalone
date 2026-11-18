@@ -1,0 +1,10 @@
+END USER LICENCE AGREEMENT - eKavach CBAC Auto-Filler
+
+1. Grant. The vendor grants you a non-exclusive, non-transferable licence to use this software on the computer(s) covered by the licence key you were issued.
+2. Restrictions. You may not copy, redistribute, sell, sublicense, reverse-engineer, or circumvent the licence mechanism of this software.
+3. Your responsibility. This tool only automates data entry in a web portal using the answers you supply. You are solely responsible for the accuracy of the data submitted, for having authority to access the portal and the accounts you use, and for complying with all applicable data-protection and health-records rules.
+4. Credentials. Credentials you enter are stored on your computer only, and are sent only to the portal you log in to.
+5. No warranty. The software is provided "as is" without warranty of any kind. The vendor is not liable for any loss arising from its use, including changes to the target website that stop the tool from working.
+6. Termination. The licence ends if you breach these terms or when a time-limited key expires.
+
+By clicking "I accept" you agree to these terms.
