@@ -577,6 +577,11 @@ class Runner:
 
         for _ in range(10):
             cur = self.active_tab(tab)
+            if cur not in ORDER and any("saved" in x for x in parts):
+                # the portal closed the examination (returned to the patient list) = all its steps are complete;
+                # steps it never offered (e.g. Oral already screened earlier) are simply not needed
+                left = ", ".join(pending)
+                return result(True, f"portal finished the examination" + (f" ({left} not needed)" if left else ""))
             if cur == "Personal History":
                 bmi, a = self.fill_exam(tab, eid)
                 answers.update(a)
@@ -609,7 +614,9 @@ class Runner:
             answers.update(ans)
             if invalid:
                 return result(False, f"{cur} FAILED: invalid fields {invalid}")
-            btn = tab.locator(f"#{sp['pane']} button:visible").filter(has_text=re.compile("save|submit|continue", re.I))
+            # the Diabetes 'button' is a <div class="btn"> with ng-click, so match any visible .btn / button
+            btn = tab.locator(f"#{sp['pane']} button:visible, #{sp['pane']} .btn:visible").filter(
+                has_text=re.compile("save|submit|continue", re.I))
             if not btn.count():
                 return result(False, f"{cur} FAILED: save button not found")
             self.close_popups(tab)
