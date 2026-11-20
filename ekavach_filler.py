@@ -175,13 +175,29 @@ class Runner:
                 if attempt == 2:
                     raise RuntimeError("Could not reach the eKavach login page. Check your internet connection.")
                 self.log("  Portal slow - retrying…")
-        pg.fill("[data-test=username]", self.cfg["username"])
-        pg.fill("[data-test=password]", self.cfg["password"])
-        pg.click("[data-test=login-btn]")
-        try:
-            pg.wait_for_url("**/dashboard/**", timeout=30000)
-        except PWTimeout:
-            raise RuntimeError("Login failed - check username/password.")
+        for attempt in range(3):
+            pg.fill("[data-test=username]", self.cfg["username"])
+            pg.fill("[data-test=password]", self.cfg["password"])
+            pg.click("[data-test=login-btn]")
+            try:
+                pg.wait_for_url("**/dashboard/**", timeout=30000)
+                break
+            except PWTimeout:
+                try:
+                    page_text = pg.inner_text("body").lower()
+                except Exception:
+                    page_text = ""
+                if "something went wrong" in page_text or "retry after" in page_text:
+                    if attempt == 2:
+                        raise RuntimeError("The eKavach portal is having trouble right now (it says 'Something went "
+                                           "wrong, retry after some time'). Your password is probably fine - "
+                                           "please try again in a few minutes.")
+                    self.log("  Portal is having trouble - waiting 30 s and retrying the login…")
+                    pg.wait_for_timeout(30000)
+                    pg.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+                    pg.wait_for_selector("[data-test=username]", timeout=60000)
+                    continue
+                raise RuntimeError("Login failed - check username/password.")
         pg.wait_for_timeout(2500)
         self.log("Logged in.")
 
@@ -324,6 +340,7 @@ class Runner:
         except Exception:
             pass
         tab.wait_for_timeout(4000)  # let the portal settle on its current step
+        self._avail = set(tab.evaluate("()=>[...document.querySelectorAll('.nav-tabs a')].filter(a=>a.offsetParent).map(a=>a.innerText.trim())"))
         return tab
 
     def fill_exam(self, tab, eid):
@@ -334,12 +351,16 @@ class Runner:
             got = tab.evaluate(r"""()=>{const t=document.body.innerText;
                 const h=t.match(/Height\s+([\d.]+)\s*cms/i), w=t.match(/Weight\s+([\d.]+)\s*kg/i);
                 return [h?h[1]:'', w?w[1]:'']}""")
-            if not (got[0] and got[1]):
-                raise RuntimeError("no height/weight recorded on the portal for this patient (shows N.A) - "
-                                   "cannot continue without real measurements")
             ov = self.overrides.setdefault(eid, {})
-            ov["height"], ov["weight"] = got
-            self.log(f"  Using height {got[0]} cm / weight {got[1]} kg recorded on the portal")
+            if got[0] and got[1]:
+                ov["height"], ov["weight"] = got
+                self.log(f"  Using height {got[0]} cm / weight {got[1]} kg recorded on the portal")
+            elif ov.get("_batch_height") and ov.get("_batch_weight"):
+                ov["height"], ov["weight"] = ov["_batch_height"], ov["_batch_weight"]
+                self.log(f"  Portal has no height/weight - using your batch values {ov['height']} cm / {ov['weight']} kg")
+            else:
+                raise RuntimeError("no height/weight on the portal for this patient (shows N.A) - enter them in "
+                                   "'Batch readings' (or a CSV); they are never invented")
         try:
             h, w = float(ov.get("height", "")), float(ov.get("weight", ""))
         except ValueError:
@@ -385,6 +406,7 @@ class Runner:
 
     def save_exam(self, tab):
         """Click Save & Continue. Returns (ok, message)."""
+        self.close_popups(tab)
         tab.locator("button:visible:has-text('Save & Continue')").first.click()
         tab.wait_for_timeout(4000)
         invalid = tab.evaluate("()=>[...document.querySelectorAll('.is-invalid')].filter(e=>e.offsetParent).length")
@@ -402,7 +424,9 @@ class Runner:
 
     def active_clinical(self, eid):
         ov = self.overrides.get(eid, {})
-        return [sp for sp in CLINICAL if any(k in ov for k in self._keys(sp))]
+        avail = getattr(self, "_avail", None)   # tabs this patient actually has (males have no Breast/Cervical)
+        return [sp for sp in CLINICAL if any(k in ov for k in self._keys(sp))
+                and (avail is None or sp["label"] in avail)]
 
     def check_clinical(self, eid):
         """Validate CSV data for the tabs BEFORE anything is saved. Returns a list of problems."""
@@ -454,6 +478,8 @@ class Runner:
             const pick = (e, f) => { const i = [...e.options].findIndex((o, k) => k > 0 && f(o));
                 if (i < 1) throw new Error('option not found'); e.selectedIndex = i; fire(e, 'change'); };
             pick(need('referredFromInstitute'), o => !want || o.text.trim() === want);   // Health Infrastructure first
+            if (rdk) { const r = document.querySelector(`input[type=radio][ng-model='${dto}.isRdk'][value='${rdk}']`);
+                       if (r) r.click(); }                                              // Yes/No before the numbers
             for (const [k, v] of Object.entries(vals)) { const e = need(k); e.value = v; fire(e, 'input'); fire(e, 'change'); }
             for (const [k, v] of Object.entries(yn)) {
                 const r = document.querySelector(`input[type=radio][ng-model='${dto}.${k}'][value='${v}']`);
@@ -461,10 +487,10 @@ class Runner:
             for (const [k, v] of Object.entries(cb)) { const e = need(k); if (e.checked !== v) e.click(); }
             if (status) pick(need('status'), o => o.value === status);
             if (sev) pick(need('score'), o => o.value === sev);
-            if (rdk) { const r = document.querySelector(`input[type=radio][ng-model='${dto}.isRdk'][value='${rdk}']`);
-                       if (r) r.click(); }
         }""", [sp["dto"], vals, yn, cb, status, want, rdk, sev])
         tab.wait_for_timeout(500)
+        if self.close_popups(tab):
+            tab.wait_for_timeout(600)
         # fields the portal has locked (tab not reached yet) are ignored; they are enabled once the step is active
         invalid = tab.evaluate("(p)=>[...document.querySelectorAll('#'+p+' input.ng-invalid, #'+p+' select.ng-invalid')]"
                                ".filter(e=>!e.disabled).map(e=>e.name||e.getAttribute('ng-model'))", sp["pane"])
@@ -479,6 +505,17 @@ class Runner:
         if rdk:
             ans[f"{L}.bloodGlucoseTestDone"] = "Yes" if rdk == "true" else "No"
         return ans, invalid
+
+    @staticmethod
+    def close_popups(tab):
+        """Close the portal's informational pop-up ('Information for Patient ...') that can cover the Save button."""
+        try:
+            return tab.evaluate(r"""()=>{let n=0;for(const m of document.querySelectorAll('.modal')){
+                if(!m.classList.contains('in')||/confirm/i.test(m.innerText))continue;
+                const b=[...m.querySelectorAll('button')].find(x=>/^\s*(close|ok)\s*$/i.test(x.innerText));
+                if(b){b.click();n++}}return n}""")
+        except Exception:
+            return 0
 
     def active_tab(self, tab):
         # the portal puts 'active' on the <a> for some patients and on the <li> for others
@@ -575,6 +612,7 @@ class Runner:
             btn = tab.locator(f"#{sp['pane']} button:visible").filter(has_text=re.compile("save|submit|continue", re.I))
             if not btn.count():
                 return result(False, f"{cur} FAILED: save button not found")
+            self.close_popups(tab)
             btn.first.click()
             tab.wait_for_timeout(1500)
             yes = tab.locator(".modal:visible button:has-text('Yes'), .bootbox:visible button:has-text('Yes')")
@@ -601,14 +639,26 @@ class Runner:
         if not b.get("enabled"):
             return
         ov = self.overrides.setdefault(eid, {})
-        vals = {"anyIssuesInMouth": "no", "restrictedMouthOpening": "no", "oralStatus": "No Abnormality Detected",
-                "cough": "no", "copdSeverity": b.get("copd", "0")}
-        if b.get("glucoseDone", "yes") == "yes":  # glucose values only when a test was actually done
+        no = "No Abnormality Detected"
+        vals = {"anyIssuesInMouth": "no", "restrictedMouthOpening": "no", "oralStatus": no,
+                "cough": "no", "copdSeverity": b.get("copd", "0"), "breastStatus": no, "cervicalStatus": no}
+        for k in ("sizeChange", "colorChange", "painInBreast", "nippleNotOnSameLevel", "anyRetractionOfNipple",
+                  "lymphadenopathy", "dischargeFromNipple", "excessiveBleedingDuringPeriods", "bleedingBetweenPeriods",
+                  "postmenopausalBleeding", "bleedingAfterIntercourse", "excessiveSmellingVaginalDischarge",
+                  "trainedViaExamination", "excessiveDischarge"):
+            vals[k] = "no"
+        # The portal makes Random sugar mandatory even when "Blood Glucose Test Done" = No, so the operator's own
+        # typed sugar values are always applied; the Yes/No answer is passed on exactly as the operator chose it.
+        if b.get("random"):
             vals.update(fastingBloodSugar=b.get("fasting"), postPrandialBloodSugar=b.get("pp"),
-                        bloodSugar=b.get("random"), isRdk="yes", diabetesStatus="No Abnormality Detected")
+                        bloodSugar=b.get("random"), isRdk=b.get("glucoseDone", "no"), diabetesStatus=no)
         if all(b.get(k) for k in ("sys", "dia", "hr")):
             vals.update(systolicBloodPressure=b["sys"], diastolicBloodPressure=b["dia"], heartRate=b["hr"],
                         hypertensionStatus="No Abnormality Detected")
+        # height/weight typed by the operator: used only if the portal has none recorded for the patient
+        if b.get("height") and b.get("weight"):
+            ov.setdefault("_batch_height", b["height"])
+            ov.setdefault("_batch_weight", b["weight"])
         for k, v in vals.items():
             if v not in (None, "") and k not in ov:
                 ov[k] = str(v)
@@ -638,6 +688,7 @@ class Runner:
             tab, bmi, answers = None, "", {}
             try:
                 self.apply_batch(eid)
+                self._avail = None
                 problems = self.check_clinical(eid)
                 if problems:
                     raise RuntimeError("; ".join(problems))
@@ -1046,28 +1097,36 @@ def run_gui():
         f.pack(fill="both", expand=True)
         b = load_config().get("batch") or {}
         ttk.Label(f, wraplength=430, text="Values YOU enter from your test records. They are applied to every "
-                  "Task-2 patient that has no value in the CSV, for Diabetes, Oral and COPD. "
-                  "Hypertension is only filled if all three BP fields are given.").grid(row=0, column=0, columnspan=2, sticky="w")
+                  "Task-2 patient that has no value in the CSV, for Diabetes, Oral, Breast, Cervical and COPD. "
+                  "Hypertension is only filled if all three BP fields are given. Height/weight are used only for "
+                  "patients whose portal shows N.A.").grid(row=0, column=0, columnspan=2, sticky="w")
         v = {k: tk.StringVar(value=b.get(k, d)) for k, d in
-             (("fasting", "82"), ("pp", "82"), ("random", "82"), ("sys", ""), ("dia", ""), ("hr", ""))}
+             (("fasting", "82"), ("pp", "82"), ("random", "82"), ("sys", ""), ("dia", ""), ("hr", ""),
+              ("height", ""), ("weight", ""))}
         labels = (("fasting", "Fasting blood sugar"), ("pp", "Post-prandial sugar"), ("random", "Random sugar (mandatory)"),
-                  ("sys", "Systolic BP (optional)"), ("dia", "Diastolic BP (optional)"), ("hr", "Heart rate (optional)"))
+                  ("sys", "Systolic BP (optional)"), ("dia", "Diastolic BP (optional)"), ("hr", "Heart rate (optional)"),
+                  ("height", "Height cm (only if portal has none)"), ("weight", "Weight kg (only if portal has none)"))
         for i, (k, lab) in enumerate(labels, start=1):
             ttk.Label(f, text=lab).grid(row=i, column=0, sticky="w", pady=2)
             ttk.Entry(f, textvariable=v[k], width=12).grid(row=i, column=1, sticky="w")
-        gd = tk.StringVar(value=b.get("glucoseDone", "yes"))
-        ttk.Label(f, text="Blood glucose test done?").grid(row=7, column=0, sticky="w", pady=2)
-        ttk.Combobox(f, textvariable=gd, values=["yes", "no"], state="readonly", width=9).grid(row=7, column=1, sticky="w")
-        ttk.Label(f, text="Oral: any issues = No, restricted mouth opening NOT ticked, status No Abnormality.\n"
-                  "COPD: cough = No, severity = 'Dyspnoea only with strenuous exercise'. HbA1c left empty.",
-                  foreground="#555").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
-        en, at = tk.BooleanVar(value=b.get("enabled", False)), tk.BooleanVar(value=b.get("attested", False))
-        ttk.Checkbutton(f, text="Use these batch readings in Task 2", variable=en).grid(row=9, column=0, columnspan=2, sticky="w")
+        gd = tk.StringVar(value=b.get("glucoseDone", "no"))
+        ttk.Label(f, text="'Blood glucose test done?' answer").grid(row=9, column=0, sticky="w", pady=2)
+        ttk.Combobox(f, textvariable=gd, values=["yes", "no"], state="readonly", width=9).grid(row=9, column=1, sticky="w")
+        ttk.Label(f, text="The sugar values above are always entered (the portal requires Random even when the "
+                  "answer is No). Oral: no issues, mouth opening not ticked. Breast/Cervical: all No / nothing ticked. "
+                  "COPD: cough No, 'Dyspnoea only with strenuous exercise'. All statuses 'No Abnormality Detected'. "
+                  "HbA1c left empty.", wraplength=430, foreground="#555").grid(row=10, column=0, columnspan=2, sticky="w", pady=6)
+        en = tk.BooleanVar(value=b.get("enabled", False))
+        ttk.Checkbutton(f, text="Use these batch readings in Task 2", variable=en).grid(row=11, column=0, columnspan=2, sticky="w")
 
         def save():
-            nums = [v[k].get().strip() for k in ("fasting", "pp", "random")]
-            if en.get() and gd.get() == "yes" and not all(x.replace(".", "", 1).isdigit() and 20 <= float(x) <= 800 for x in nums):
+            def num(x, lo, hi):
+                return x.replace(".", "", 1).isdigit() and lo <= float(x) <= hi
+            if en.get() and not all(num(v[k].get().strip(), 20, 800) for k in ("fasting", "pp", "random")):
                 return messagebox.showerror("Batch readings", "Fasting, post-prandial and random must be numbers (20-800).", parent=w)
+            hw = [v["height"].get().strip(), v["weight"].get().strip()]
+            if any(hw) and not (num(hw[0], 60, 250) and num(hw[1], 10, 150)):
+                return messagebox.showerror("Batch readings", "Height must be 60-250 cm and weight 10-150 kg (or leave both empty).", parent=w)
             c = load_config()
             c["batch"] = {"enabled": en.get(), "attested": True, "glucoseDone": gd.get(), "copd": "0",
                           **{k: v[k].get().strip() for k in v}}
@@ -1075,7 +1134,7 @@ def run_gui():
             w.destroy()
             log("Batch readings saved" + (" and ENABLED for Task 2." if en.get() else " (disabled)."))
 
-        ttk.Button(f, text="Save", command=save).grid(row=11, column=0, pady=10, sticky="w")
+        ttk.Button(f, text="Save", command=save).grid(row=12, column=0, pady=10, sticky="w")
 
     stop_evt = threading.Event()
     decision = {"v": None}
