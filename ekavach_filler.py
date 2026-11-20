@@ -180,7 +180,7 @@ class Runner:
             pg.fill("[data-test=password]", self.cfg["password"])
             pg.click("[data-test=login-btn]")
             try:
-                pg.wait_for_url("**/dashboard/**", timeout=30000)
+                pg.wait_for_url("**/dashboard/**", timeout=90000)   # the portal is sometimes very slow after the login call
                 break
             except PWTimeout:
                 try:
