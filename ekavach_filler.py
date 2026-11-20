@@ -603,7 +603,7 @@ class Runner:
                 if self.active_tab(tab) == pending[0]:
                     self.log(f"  {cur}: no data supplied - moved on to {pending[0]}")
                     continue
-                why = "not automated" if sp is None else "no data for it in the CSV"
+                why = "not automated" if sp is None else "no readings supplied - fill Batch readings or a CSV"
                 return result(False, f"stopped at {cur} ({why}); still to do: {', '.join(pending)}")
             ans, invalid = self.fill_pane(tab, sp, eid)
             answers.update(ans)
@@ -668,6 +668,11 @@ class Runner:
         limit = int(self.cfg.get("max_patients") or 0) or 10**9
         self.open_pending_list("NCD Screening", "button.dropdown-toggle:visible")
         self.pg.wait_for_timeout(4000)  # let the list finish rendering
+        b = self.cfg.get("batch") or {}
+        if not b.get("enabled") or not b.get("random"):
+            self.log("NOTE: no Random sugar value is set in 'Batch readings' (or batch is switched off). The portal "
+                     "requires one, so patients waiting at Diabetes will stop there. Open Batch readings, enter "
+                     "your values, tick 'Use these batch readings' and Save.")
         eligible = dict(self.screening_rows())
         total = self.pg.evaluate("()=>[...document.querySelectorAll('tbody tr')].filter(r=>r.offsetParent&&r.querySelector('button.dropdown-toggle')).length")
         self.log(f"NCD Screening list: {total} patient(s) shown, {len(eligible)} can be examined "
@@ -1100,7 +1105,7 @@ def run_gui():
                   "Task-2 patient that has no value in the CSV, for Diabetes, Oral, Breast, Cervical and COPD. "
                   "Hypertension is only filled if all three BP fields are given. Height/weight are used only for "
                   "patients whose portal shows N.A.").grid(row=0, column=0, columnspan=2, sticky="w")
-        v = {k: tk.StringVar(value=b.get(k, d)) for k, d in
+        v = {k: tk.StringVar(value=b.get(k) or d) for k, d in
              (("fasting", "82"), ("pp", "82"), ("random", "82"), ("sys", ""), ("dia", ""), ("hr", ""),
               ("height", ""), ("weight", ""))}
         labels = (("fasting", "Fasting blood sugar"), ("pp", "Post-prandial sugar"), ("random", "Random sugar (mandatory)"),
