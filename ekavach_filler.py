@@ -318,7 +318,7 @@ class Runner:
 
 
     # ---- task 2: Personal history + examination (NCD Screening list) ------------
-    def load_all_rows(self, max_rounds=60):
+    def load_all_rows(self, max_rounds=60, want=()):
         """The NCD Screening list loads 10 more patients each time you scroll to its end - keep scrolling until
         no new rows appear, so patients beyond the first 10 are not missed."""
         pg, last = self.pg, -1
@@ -326,6 +326,8 @@ class Runner:
         stable = 0
         for _ in range(max_rounds):
             n = pg.evaluate(cnt)
+            if want and all(pg.locator("tbody tr:visible", has_text=w).count() for w in want):
+                return n   # the patient(s) you chose are on screen - no need to load the rest
             stable = stable + 1 if n == last else 0
             if stable >= 2:
                 break
@@ -335,6 +337,20 @@ class Runner:
                         "window.scrollTo(0,document.body.scrollHeight)}")
             pg.wait_for_timeout(2000)
         return last
+
+    def scroll_more(self):
+        """Scroll the NCD Screening list to its end once; True if new rows appeared."""
+        pg = self.pg
+        cnt = "()=>[...document.querySelectorAll('tbody tr')].filter(r=>r.offsetParent&&r.querySelector('button.dropdown-toggle')).length"
+        before = pg.evaluate(cnt)
+        for _ in range(3):
+            pg.evaluate("()=>{for(const e of document.querySelectorAll('*')){if(e.scrollHeight>e.clientHeight+20"
+                        "&&getComputedStyle(e).overflowY!='visible')e.scrollTop=e.scrollHeight}"
+                        "window.scrollTo(0,document.body.scrollHeight)}")
+            pg.wait_for_timeout(2500)
+            if pg.evaluate(cnt) > before:
+                return True
+        return False
 
     def screening_rows(self):
         """[(ekavach_id, name)] of NCD Screening rows whose Examine button is enabled."""
@@ -693,7 +709,8 @@ class Runner:
         limit = int(self.cfg.get("max_patients") or 0) or 10**9
         self.open_pending_list("NCD Screening", "button.dropdown-toggle:visible")
         self.pg.wait_for_timeout(4000)  # let the list finish rendering
-        self.load_all_rows()
+        if self.overrides:   # only your chosen patients -> load just until they show
+            self.load_all_rows(want=list(self.overrides))
         b = self.cfg.get("batch") or {}
         if not b.get("enabled") or not b.get("random"):
             self.log("NOTE: no Random sugar value is set in 'Batch readings' (or batch is switched off). The portal "
@@ -703,10 +720,26 @@ class Runner:
         total = self.pg.evaluate("()=>[...document.querySelectorAll('tbody tr')].filter(r=>r.offsetParent&&r.querySelector('button.dropdown-toggle')).length")
         self.log(f"NCD Screening list: {total} patient(s) shown, {len(eligible)} can be examined "
                  f"(the rest have a greyed-out Examine button = already examined).")
-        if not eligible:
+        if not eligible and not self.overrides:
+            self.log("None of the first patients is waiting - scrolling down the list for more...")
+        elif not eligible:
             self.log("Nothing to do: no patient in this account's NCD Screening list is waiting for examination. "
                      "If you expected some, open the list in the browser and check the Examine buttons.")
-        for eid in (list(self.overrides) or list(eligible)):
+        def lazy_candidates():
+            # no CSV: work through the list as it loads (10 more patients appear each time we scroll), instead of
+            # loading all ~600 first. Stops as soon as Max patients is reached.
+            seen = set()
+            while True:
+                fresh = [r for r in self.screening_rows() if r[0] not in seen]
+                if fresh:
+                    seen.add(fresh[0][0])
+                    eligible[fresh[0][0]] = fresh[0][1]
+                    yield fresh[0][0]
+                    continue
+                if not self.scroll_more():
+                    return
+
+        for eid in (list(self.overrides) or lazy_candidates()):
             if len(done) >= limit or self.stop.is_set():
                 break
             if eid not in eligible:
