@@ -31,6 +31,8 @@ CONFIG_FILE = BASE / "config.json"
 TASKS = ["1. CBAC form  (Pending CBAC List)",
          "2. Personal history + examination  (NCD Screening - CSV optional)"]
 LOGIN_URL = "https://ekavach.nhm.up.gov.in/imtecho-ui/"
+BROWSER_NAMES = {"chrome": "Google Chrome", "msedge": "Microsoft Edge"}
+BROWSER_CHOICES = {"Automatic (Chrome, else Edge)": "auto", "Google Chrome": "chrome", "Microsoft Edge": "msedge"}
 
 # Examination tabs opened after Personal History is saved. ALL values come from the CSV - never invented.
 #   num    : number inputs {column: (min, max)}      radios : Yes/No questions (default No when the tab is used)
@@ -110,6 +112,7 @@ DEFAULT_CONFIG = {
     "review_before_submit": False,
     "max_patients": 5,
     "headless": False,
+    "browser": "auto",
     "batch": {},
     "defaults": {
         "radio": "no",
@@ -805,14 +808,19 @@ class Runner:
         done, failed = [], []
         with sync_playwright() as p:
             browser = None
-            for ch in (self.cfg.get("browser", "chrome"), "chrome", "msedge"):
+            want = self.cfg.get("browser", "auto")
+            order = ("chrome", "msedge") if want not in ("chrome", "msedge") else (want,)
+            for ch in order:
                 try:
                     browser = p.chromium.launch(channel=ch, headless=self.cfg.get("headless", False))
-                    self.log(f"Using browser: {ch}")
+                    self.log(f"Using browser: {BROWSER_NAMES[ch]}")
                     break
                 except Exception:
                     continue
             if browser is None:
+                if want in ("chrome", "msedge"):
+                    raise RuntimeError(f"{BROWSER_NAMES[want]} could not be started - is it installed? "
+                                       f"Pick another browser (or 'Automatic') in the Browser box.")
                 raise RuntimeError("Neither Google Chrome nor Microsoft Edge could be started.")
             self.pg = browser.new_page(viewport={"width": 1600, "height": 900})
             self.pg.set_default_timeout(30000)
@@ -928,7 +936,13 @@ def run_gui():
     ttk.Checkbutton(pw_row, text="Remember (encrypted)", variable=remember_v).pack(side="left", padx=6)
     row("Password", pw_row, 1)
     infra_v = tk.StringVar(value=cfg.get("health_infra", ""))
-    row("Health infrastructure name", ttk.Entry(frm, textvariable=infra_v), 2)
+    ir = ttk.Frame(frm)
+    ttk.Entry(ir, textvariable=infra_v).pack(side="left", fill="x", expand=True)
+    ttk.Label(ir, text="   Browser:").pack(side="left")
+    saved_b = next((k for k, v in BROWSER_CHOICES.items() if v == cfg.get("browser", "auto")), list(BROWSER_CHOICES)[0])
+    browser_v = tk.StringVar(value=saved_b)
+    ttk.Combobox(ir, textvariable=browser_v, values=list(BROWSER_CHOICES), state="readonly", width=26).pack(side="left", padx=4)
+    row("Health infrastructure name", ir, 2)
     task_v = tk.StringVar(value=TASKS[0])
     mt = ttk.Frame(frm)
     ttk.Entry(mt, textvariable=max_v, width=8).pack(side="left")
@@ -1246,7 +1260,7 @@ def run_gui():
     def start():
         c = load_config()
         c.update(username=user_v.get().strip(), password=pw_v.get(), health_infra=infra_v.get().strip(),
-                 review_before_submit=review_v.get())
+                 review_before_submit=review_v.get(), browser=BROWSER_CHOICES.get(browser_v.get(), "auto"))
         try:
             c["max_patients"] = int(max_v.get() or 0)
         except ValueError:
@@ -1281,6 +1295,8 @@ def run_cli(args):
     elif cfg["username"] and not cfg["password"]:
         cfg["password"] = vault.get_password(cfg["username"])
     cfg["task"] = args.task
+    if getattr(args, "browser", None):
+        cfg["browser"] = args.browser
     cfg["max_patients"] = args.max
     cfg["headless"] = args.headless
     cfg["review_before_submit"] = False
@@ -1298,5 +1314,6 @@ if __name__ == "__main__":
     ap.add_argument("--task", choices=["cbac", "exam"], default="cbac")
     ap.add_argument("--user")
     ap.add_argument("--password")
+    ap.add_argument("--browser", choices=["auto", "chrome", "msedge"])
     a = ap.parse_args()
     run_cli(a) if a.cli else run_gui()
