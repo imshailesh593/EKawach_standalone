@@ -218,16 +218,16 @@ class Runner:
     def _open_list_once(self, tab, wait_sel):
         pg = self.pg
         if "/ncd/members" not in pg.url:
-            pg.get_by_text("NCD", exact=True).first.click(timeout=15000)
+            pg.get_by_text("NCD", exact=True).first.click(timeout=60000)
             pg.wait_for_timeout(1000)
-            pg.get_by_text("NCD Reports").first.click(timeout=15000)
+            pg.get_by_text("NCD Reports").first.click(timeout=60000)
             pg.wait_for_timeout(1000)
-            pg.get_by_text("NCD Enrollment feature").first.click(timeout=15000)
+            pg.get_by_text("NCD Enrollment feature").first.click(timeout=60000)
             pg.wait_for_timeout(5000)
         pg.mouse.move(900, 500)  # close the flyout menu
         pg.wait_for_timeout(800)
-        pg.locator("a:visible", has_text=tab).first.click(timeout=15000)
-        pg.wait_for_selector(wait_sel, timeout=30000)
+        pg.locator("a:visible", has_text=tab).first.click(timeout=60000)
+        pg.wait_for_selector(wait_sel, timeout=90000)
         pg.wait_for_timeout(500)
 
     def pending_rows(self):
@@ -239,7 +239,7 @@ class Runner:
     def click_fill(self, eid):
         row = self.pg.locator("tbody tr:visible", has_text=eid).first
         row.locator("button:has-text('Fill CBAC')").click()
-        self.pg.wait_for_selector("select[name=insuranceScheme]", timeout=30000)
+        self.pg.wait_for_selector("select[name=insuranceScheme]", timeout=90000)
         self.pg.wait_for_timeout(1500)
 
     # ---- form filling -----------------------------------------------------
@@ -314,7 +314,7 @@ class Runner:
         pg = self.pg
         pg.locator("button:has-text('Submit')").first.click()
         try:
-            pg.wait_for_url("**/ncd/members*", timeout=20000)
+            pg.wait_for_url("**/ncd/members*", timeout=60000)
             return True
         except PWTimeout:
             return False
@@ -366,14 +366,14 @@ class Runner:
         row = pg.locator("tbody tr:visible", has_text=eid).first
         row.locator("button.dropdown-toggle").click()
         pg.wait_for_timeout(500)
-        with pg.context.expect_page(timeout=30000) as info:
+        with pg.context.expect_page(timeout=90000) as info:
             row.locator("a.dropdown-item", has_text="Perform Screening").first.evaluate("e => e.click()")
         tab = info.value
-        tab.set_default_timeout(30000)
+        tab.set_default_timeout(90000)
         tab.wait_for_function("()=>!!(document.querySelector('.nav-tabs a.active')||document.querySelector('.nav-tabs li.active'))",
                               timeout=45000)
         try:  # wait until the patient summary (right-hand panel) has loaded
-            tab.wait_for_function("()=>/Score/.test(document.body.innerText)", timeout=25000)
+            tab.wait_for_function("()=>/Score/.test(document.body.innerText)", timeout=60000)
         except Exception:
             pass
         tab.wait_for_timeout(4000)  # let the portal settle on its current step
@@ -409,7 +409,7 @@ class Runner:
         want = ov.get("healthInfrastructure", "") or self.cfg.get("health_infra", "")
         try:  # options are loaded asynchronously
             sel.evaluate("e => new Promise(res => { const t = setInterval(() => { if (e.options.length > 1) "
-                         "{ clearInterval(t); res(true) } }, 200); setTimeout(() => { clearInterval(t); res(false) }, 20000) })")
+                         "{ clearInterval(t); res(true) } }, 200); setTimeout(() => { clearInterval(t); res(false) }, 60000) })")
         except Exception:
             pass
         picked = sel.evaluate("""(e, want) => {
@@ -504,7 +504,7 @@ class Runner:
         want = ov.get("healthInfrastructure", "") or self.cfg.get("health_infra", "")
         try:  # the Health Infrastructure list loads a moment after the tab opens - wait for it
             tab.evaluate("(p)=>new Promise(res=>{const t=setInterval(()=>{const e=document.querySelector('#'+p+' select[name=hospital]');"
-                         "if(e&&e.options.length>1){clearInterval(t);res(1)}},300);setTimeout(()=>{clearInterval(t);res(0)},20000)})", sp["pane"])
+                         "if(e&&e.options.length>1){clearInterval(t);res(1)}},300);setTimeout(()=>{clearInterval(t);res(0)},60000)})", sp["pane"])
         except Exception:
             pass
         rdk = to_bool_str(ov.get("isRdk", "yes")) if sp["dto"] == "diabetesDto" else ""
@@ -823,7 +823,7 @@ class Runner:
                                        f"Pick another browser (or 'Automatic') in the Browser box.")
                 raise RuntimeError("Neither Google Chrome nor Microsoft Edge could be started.")
             self.pg = browser.new_page(viewport={"width": 1600, "height": 900})
-            self.pg.set_default_timeout(30000)
+            self.pg.set_default_timeout(90000)
             try:
                 self.login()
                 if self.cfg.get("task") == "exam":
@@ -880,6 +880,9 @@ class Runner:
                         self.rec(eid, name, "Error", score, str(e).splitlines()[0][:200], answers)
                         failed.append(eid)
                         skip.add(eid)
+            except PWTimeout:
+                raise RuntimeError("The eKavach portal is responding very slowly - a page did not load within the "
+                                   "waiting time (up to 90 s). Nothing was lost; please try again in a few minutes.")
             finally:
                 browser.close()
         self.log(f"Finished. Submitted/filled: {len(done)}, failed: {len(failed)}.")
