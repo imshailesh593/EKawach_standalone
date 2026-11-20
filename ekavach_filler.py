@@ -186,16 +186,28 @@ class Runner:
         self.log("Logged in.")
 
     def open_pending_list(self, tab="Pending CBAC List", wait_sel="button:visible:has-text('Fill CBAC')"):
+        for attempt in range(3):  # the portal menu is sometimes not ready when clicked
+            try:
+                return self._open_list_once(tab, wait_sel)
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                self.log("  Portal menu not ready - retrying…")
+                self.pg.goto(LOGIN_URL + "techo/dashboard/webtasks", wait_until="domcontentloaded")
+                self.pg.wait_for_timeout(4000)
+
+    def _open_list_once(self, tab, wait_sel):
         pg = self.pg
         if "/ncd/members" not in pg.url:
-            pg.get_by_text("NCD", exact=True).first.click()
-            pg.wait_for_timeout(700)
-            pg.get_by_text("NCD Reports").first.click()
-            pg.wait_for_timeout(700)
-            pg.get_by_text("NCD Enrollment feature").first.click()
-            pg.wait_for_timeout(3500)
+            pg.get_by_text("NCD", exact=True).first.click(timeout=15000)
+            pg.wait_for_timeout(1000)
+            pg.get_by_text("NCD Reports").first.click(timeout=15000)
+            pg.wait_for_timeout(1000)
+            pg.get_by_text("NCD Enrollment feature").first.click(timeout=15000)
+            pg.wait_for_timeout(5000)
         pg.mouse.move(900, 500)  # close the flyout menu
-        pg.locator("a:visible", has_text=tab).first.click()
+        pg.wait_for_timeout(800)
+        pg.locator("a:visible", has_text=tab).first.click(timeout=15000)
         pg.wait_for_selector(wait_sel, timeout=30000)
         pg.wait_for_timeout(500)
 
@@ -412,6 +424,13 @@ class Runner:
         return problems
 
     def fill_pane(self, tab, sp, eid):
+        ans, invalid = self._fill_pane_once(tab, sp, eid)
+        if invalid:  # the page sometimes lags behind the click: wait and try once more
+            tab.wait_for_timeout(2000)
+            ans, invalid = self._fill_pane_once(tab, sp, eid)
+        return ans, invalid
+
+    def _fill_pane_once(self, tab, sp, eid):
         """Fill one tab's fields (works even while the tab is hidden). Returns (answers, invalid_field_names)."""
         ov = self.overrides.get(eid, {})
         vals = {k: str(ov[k]) for k in sp["num"] if k in ov}
@@ -446,8 +465,9 @@ class Runner:
                        if (r) r.click(); }
         }""", [sp["dto"], vals, yn, cb, status, want, rdk, sev])
         tab.wait_for_timeout(500)
+        # fields the portal has locked (tab not reached yet) are ignored; they are enabled once the step is active
         invalid = tab.evaluate("(p)=>[...document.querySelectorAll('#'+p+' input.ng-invalid, #'+p+' select.ng-invalid')]"
-                               ".map(e=>e.name||e.getAttribute('ng-model'))", sp["pane"])
+                               ".filter(e=>!e.disabled).map(e=>e.name||e.getAttribute('ng-model'))", sp["pane"])
         L = sp["label"]
         ans = {f"{L}.{k}": v for k, v in vals.items()}
         ans.update({f"{L}.{k}": ("Yes" if v == "true" else "No") for k, v in yn.items()})
@@ -539,6 +559,13 @@ class Runner:
                 break
             sp = next((x for x in CLINICAL if x["label"] == cur), None)
             if sp is None or sp["label"] not in pending:
+                # no data for this step (e.g. Breast/Cervical): try to jump to the next step we do have data for
+                tab.evaluate("(l)=>{const a=[...document.querySelectorAll('.nav-tabs a')].find(x=>x.innerText.trim()===l);"
+                             " if(a) a.click()}", pending[0])
+                tab.wait_for_timeout(1500)
+                if self.active_tab(tab) == pending[0]:
+                    self.log(f"  {cur}: no data supplied - moved on to {pending[0]}")
+                    continue
                 why = "not automated" if sp is None else "no data for it in the CSV"
                 return result(False, f"stopped at {cur} ({why}); still to do: {', '.join(pending)}")
             ans, invalid = self.fill_pane(tab, sp, eid)
