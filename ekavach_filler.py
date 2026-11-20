@@ -29,7 +29,7 @@ import vault
 BASE = licensing.user_dir()          # writable per-user data folder (config, screenshots)
 CONFIG_FILE = BASE / "config.json"
 TASKS = ["1. CBAC form  (Pending CBAC List)",
-         "2. Personal history + height/weight  (NCD Screening - needs CSV)"]
+         "2. Personal history + examination  (NCD Screening - CSV optional)"]
 LOGIN_URL = "https://ekavach.nhm.up.gov.in/imtecho-ui/"
 
 # Examination tabs opened after Personal History is saved. ALL values come from the CSV - never invented.
@@ -58,6 +58,8 @@ CLINICAL = [
                 "bleedingAfterIntercourse", "excessiveSmellingVaginalDischarge", "trainedViaExamination",
                 "excessiveDischarge"],
      "checks": [], "status": "cervicalStatus", "required": ["cervicalStatus"]},
+    {"label": "COPD", "pane": "copd-main", "dto": "copdDto", "ok": (), "num": {}, "radios": ["cough"],
+     "checks": [], "status": None, "extra": ["copdSeverity"], "required": ["copdSeverity"]},
 ]
 
 
@@ -108,6 +110,7 @@ DEFAULT_CONFIG = {
     "review_before_submit": False,
     "max_patients": 5,
     "headless": False,
+    "batch": {},
     "defaults": {
         "radio": "no",
         "selects": SELECT_DEFAULTS,
@@ -308,22 +311,32 @@ class Runner:
             tab.wait_for_function("()=>/Score/.test(document.body.innerText)", timeout=25000)
         except Exception:
             pass
-        tab.wait_for_timeout(1500)
+        tab.wait_for_timeout(4000)  # let the portal settle on its current step
         return tab
 
     def fill_exam(self, tab, eid):
         d, ov = self.cfg["defaults"], self.overrides.get(eid, {})
         answers = {}
         # measurements must be supplied - they are never invented
+        if "height" not in ov or "weight" not in ov:  # no CSV values: read what the portal has recorded
+            got = tab.evaluate(r"""()=>{const t=document.body.innerText;
+                const h=t.match(/Height\s+([\d.]+)\s*cms/i), w=t.match(/Weight\s+([\d.]+)\s*kg/i);
+                return [h?h[1]:'', w?w[1]:'']}""")
+            if not (got[0] and got[1]):
+                raise RuntimeError("no height/weight recorded on the portal for this patient (shows N.A) - "
+                                   "cannot continue without real measurements")
+            ov = self.overrides.setdefault(eid, {})
+            ov["height"], ov["weight"] = got
+            self.log(f"  Using height {got[0]} cm / weight {got[1]} kg recorded on the portal")
         try:
             h, w = float(ov.get("height", "")), float(ov.get("weight", ""))
         except ValueError:
-            raise RuntimeError("no height/weight supplied in the CSV for this patient")
+            raise RuntimeError("invalid height/weight")
         if not (60 <= h <= 250 and 10 <= w <= 150):
             raise RuntimeError(f"height {h} / weight {w} outside the form's allowed range (60-250 cm, 10-150 kg)")
         # Health Infrastructure (hidden 'chosen' select): first real option unless the CSV names one
         sel = tab.locator("select[ng-model='ncdmd.member.cbac.referredFromInstitute']")
-        want = ov.get("healthInfrastructure", "")
+        want = ov.get("healthInfrastructure", "") or self.cfg.get("health_infra", "")
         try:  # options are loaded asynchronously
             sel.evaluate("e => new Promise(res => { const t = setInterval(() => { if (e.options.length > 1) "
                          "{ clearInterval(t); res(true) } }, 200); setTimeout(() => { clearInterval(t); res(false) }, 20000) })")
@@ -373,7 +386,7 @@ class Runner:
     # ---- Hypertension / Diabetes / Oral / Breast / Cervical tabs --------------
     @staticmethod
     def _keys(sp):
-        return list(sp["num"]) + sp["radios"] + sp["checks"] + [sp["status"]]
+        return list(sp["num"]) + sp["radios"] + sp["checks"] + sp.get("extra", []) + ([sp["status"]] if sp["status"] else [])
 
     def active_clinical(self, eid):
         ov = self.overrides.get(eid, {})
@@ -393,7 +406,7 @@ class Runner:
                             problems.append(f"{sp['label']}: {k}={ov[k]} outside {lo}-{hi}")
                     except ValueError:
                         problems.append(f"{sp['label']}: {k}='{ov[k]}' is not a number")
-            if sp["status"] in ov and norm_status(ov[sp["status"]]) not in sp["ok"]:
+            if sp["status"] and sp["status"] in ov and norm_status(ov[sp["status"]]) not in sp["ok"]:
                 nice = " / ".join(x.replace("_", " ").title() for x in sp["ok"])
                 problems.append(f"{sp['label']}: {sp['status']} must be one of: {nice}")
         return problems
@@ -404,24 +417,34 @@ class Runner:
         vals = {k: str(ov[k]) for k in sp["num"] if k in ov}
         yn = {k: to_bool_str(ov.get(k, "no")) for k in sp["radios"]}
         cb = {k: to_bool_str(ov.get(k, "no")) == "true" for k in sp["checks"]}
-        status = norm_status(ov[sp["status"]])
+        status = norm_status(ov[sp["status"]]) if sp["status"] else None
+        sev = str(ov.get("copdSeverity", "")).strip() if sp["dto"] == "copdDto" else ""
+        if sev and not sev.startswith("number:"):
+            sev = "number:" + sev
+        want = ov.get("healthInfrastructure", "") or self.cfg.get("health_infra", "")
+        try:  # the Health Infrastructure list loads a moment after the tab opens - wait for it
+            tab.evaluate("(p)=>new Promise(res=>{const t=setInterval(()=>{const e=document.querySelector('#'+p+' select[name=hospital]');"
+                         "if(e&&e.options.length>1){clearInterval(t);res(1)}},300);setTimeout(()=>{clearInterval(t);res(0)},20000)})", sp["pane"])
+        except Exception:
+            pass
         rdk = to_bool_str(ov.get("isRdk", "yes")) if sp["dto"] == "diabetesDto" else ""
-        tab.evaluate("""([dto, vals, yn, cb, status, want, rdk]) => {
+        tab.evaluate("""([dto, vals, yn, cb, status, want, rdk, sev]) => {
             const fire = (e, t) => e.dispatchEvent(new Event(t, {bubbles: true}));
             const q = m => document.querySelector(`[ng-model='${dto}.${m}']`);
             const need = m => { const e = q(m); if (!e) throw new Error('field not found: ' + m); return e };
+            const pick = (e, f) => { const i = [...e.options].findIndex((o, k) => k > 0 && f(o));
+                if (i < 1) throw new Error('option not found'); e.selectedIndex = i; fire(e, 'change'); };
+            pick(need('referredFromInstitute'), o => !want || o.text.trim() === want);   // Health Infrastructure first
             for (const [k, v] of Object.entries(vals)) { const e = need(k); e.value = v; fire(e, 'input'); fire(e, 'change'); }
             for (const [k, v] of Object.entries(yn)) {
                 const r = document.querySelector(`input[type=radio][ng-model='${dto}.${k}'][value='${v}']`);
                 if (!r) throw new Error('radio not found: ' + k); r.click(); }
             for (const [k, v] of Object.entries(cb)) { const e = need(k); if (e.checked !== v) e.click(); }
-            const pick = (e, f) => { const i = [...e.options].findIndex((o, k) => k > 0 && f(o));
-                if (i < 1) throw new Error('option not found'); e.selectedIndex = i; fire(e, 'change'); };
-            pick(need('status'), o => o.value === status);
-            pick(need('referredFromInstitute'), o => !want || o.text.trim() === want);
+            if (status) pick(need('status'), o => o.value === status);
+            if (sev) pick(need('score'), o => o.value === sev);
             if (rdk) { const r = document.querySelector(`input[type=radio][ng-model='${dto}.isRdk'][value='${rdk}']`);
                        if (r) r.click(); }
-        }""", [sp["dto"], vals, yn, cb, status, ov.get("healthInfrastructure", ""), rdk])
+        }""", [sp["dto"], vals, yn, cb, status, want, rdk, sev])
         tab.wait_for_timeout(500)
         invalid = tab.evaluate("(p)=>[...document.querySelectorAll('#'+p+' input.ng-invalid, #'+p+' select.ng-invalid')]"
                                ".map(e=>e.name||e.getAttribute('ng-model'))", sp["pane"])
@@ -429,7 +452,10 @@ class Runner:
         ans = {f"{L}.{k}": v for k, v in vals.items()}
         ans.update({f"{L}.{k}": ("Yes" if v == "true" else "No") for k, v in yn.items()})
         ans.update({f"{L}.{k}": ("Yes" if v else "No") for k, v in cb.items()})
-        ans[f"{L}.status"] = status
+        if status:
+            ans[f"{L}.status"] = status
+        if sev:
+            ans[f"{L}.dyspnoeaSeverity"] = sev
         if rdk:
             ans[f"{L}.bloodGlucoseTestDone"] = "Yes" if rdk == "true" else "No"
         return ans, invalid
@@ -507,6 +533,9 @@ class Runner:
                     return result(False, "portal did not move on after Personal History")
                 continue
             if not pending:
+                if not self.active_clinical(eid):
+                    return result(False, f"stopped at {cur}: no readings supplied for the remaining steps "
+                                         f"(add them in a CSV to complete)")
                 break
             sp = next((x for x in CLINICAL if x["label"] == cur), None)
             if sp is None or sp["label"] not in pending:
@@ -520,7 +549,12 @@ class Runner:
             if not btn.count():
                 return result(False, f"{cur} FAILED: save button not found")
             btn.first.click()
-            tab.wait_for_timeout(3000)
+            tab.wait_for_timeout(1500)
+            yes = tab.locator(".modal:visible button:has-text('Yes'), .bootbox:visible button:has-text('Yes')")
+            if yes.count():  # portal's "Confirm action" pop-up (e.g. BP checked 3 times) - values come from the user's CSV
+                self.log(f"  Confirm pop-up: {' '.join(tab.locator('.modal:visible').first.inner_text().split())[:90]} -> Yes")
+                yes.first.click()
+            tab.wait_for_timeout(2000)
             bad = tab.evaluate("(p)=>[...document.querySelectorAll('#'+p+' .is-invalid')].filter(e=>e.offsetParent).length",
                                sp["pane"])
             if bad:
@@ -534,14 +568,37 @@ class Runner:
             return result(False, f"incomplete; still to do: {', '.join(pending)}")
         return result(True)
 
+    def apply_batch(self, eid):
+        """Operator-entered batch readings (Batch readings window), used where the CSV has no value."""
+        b = self.cfg.get("batch") or {}
+        if not b.get("enabled"):
+            return
+        ov = self.overrides.setdefault(eid, {})
+        vals = {"anyIssuesInMouth": "no", "restrictedMouthOpening": "no", "oralStatus": "No Abnormality Detected",
+                "cough": "no", "copdSeverity": b.get("copd", "0")}
+        if b.get("glucoseDone", "yes") == "yes":  # glucose values only when a test was actually done
+            vals.update(fastingBloodSugar=b.get("fasting"), postPrandialBloodSugar=b.get("pp"),
+                        bloodSugar=b.get("random"), isRdk="yes", diabetesStatus="No Abnormality Detected")
+        if all(b.get(k) for k in ("sys", "dia", "hr")):
+            vals.update(systolicBloodPressure=b["sys"], diastolicBloodPressure=b["dia"], heartRate=b["hr"],
+                        hypertensionStatus="No Abnormality Detected")
+        for k, v in vals.items():
+            if v not in (None, "") and k not in ov:
+                ov[k] = str(v)
+
     def run_exam(self):
         done, failed = [], []
-        if not self.overrides:
-            raise RuntimeError("This task needs a CSV with columns ekavach_id,height,weight (real measurements).")
         limit = int(self.cfg.get("max_patients") or 0) or 10**9
         self.open_pending_list("NCD Screening", "button.dropdown-toggle:visible")
+        self.pg.wait_for_timeout(4000)  # let the list finish rendering
         eligible = dict(self.screening_rows())
-        for eid in self.overrides:
+        total = self.pg.evaluate("()=>[...document.querySelectorAll('tbody tr')].filter(r=>r.offsetParent&&r.querySelector('button.dropdown-toggle')).length")
+        self.log(f"NCD Screening list: {total} patient(s) shown, {len(eligible)} can be examined "
+                 f"(the rest have a greyed-out Examine button = already examined).")
+        if not eligible:
+            self.log("Nothing to do: no patient in this account's NCD Screening list is waiting for examination. "
+                     "If you expected some, open the list in the browser and check the Examine buttons.")
+        for eid in (list(self.overrides) or list(eligible)):
             if len(done) >= limit or self.stop.is_set():
                 break
             if eid not in eligible:
@@ -553,6 +610,7 @@ class Runner:
             self.log(f"Opening examination form: {label}")
             tab, bmi, answers = None, "", {}
             try:
+                self.apply_batch(eid)
                 problems = self.check_clinical(eid)
                 if problems:
                     raise RuntimeError("; ".join(problems))
@@ -727,26 +785,28 @@ def run_gui():
     pw_e.pack(side="left", fill="x", expand=True)
     ttk.Checkbutton(pw_row, text="Remember (encrypted)", variable=remember_v).pack(side="left", padx=6)
     row("Password", pw_row, 1)
+    infra_v = tk.StringVar(value=cfg.get("health_infra", ""))
+    row("Health infrastructure name", ttk.Entry(frm, textvariable=infra_v), 2)
     task_v = tk.StringVar(value=TASKS[0])
     mt = ttk.Frame(frm)
     ttk.Entry(mt, textvariable=max_v, width=8).pack(side="left")
     ttk.Label(mt, text="   Task:").pack(side="left")
     ttk.Combobox(mt, textvariable=task_v, values=TASKS, state="readonly", width=48).pack(side="left", padx=4)
-    row("Max patients (0 = all)", mt, 2)
+    row("Max patients (0 = all)", mt, 3)
     csv_row = ttk.Frame(frm)
     ttk.Entry(csv_row, textvariable=csv_v).pack(side="left", fill="x", expand=True)
     ttk.Button(csv_row, text="Browse…", command=lambda: csv_v.set(
         filedialog.askopenfilename(filetypes=[("CSV", "*.csv")]) or csv_v.get())).pack(side="left", padx=4)
-    row("Patient answers CSV (optional)", csv_row, 3)
+    row("Patient answers CSV (optional)", csv_row, 4)
     ttk.Checkbutton(frm, text="Pause to review each form before submitting",
-                    variable=review_v).grid(row=4, column=1, sticky="w")
+                    variable=review_v).grid(row=5, column=1, sticky="w")
     ttk.Checkbutton(frm, text="Dry run (fill + screenshot, never submit)",
-                    variable=dry_v).grid(row=5, column=1, sticky="w")
+                    variable=dry_v).grid(row=6, column=1, sticky="w")
     frm.columnconfigure(1, weight=1)
 
     logbox = scrolledtext.ScrolledText(frm, height=18, state="disabled")
-    logbox.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=8)
-    frm.rowconfigure(7, weight=1)
+    logbox.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=8)
+    frm.rowconfigure(8, weight=1)
 
     def log(msg):
         def _w():
@@ -757,7 +817,7 @@ def run_gui():
         root.after(0, _w)
 
     lic_lbl = ttk.Label(frm)
-    lic_lbl.grid(row=8, column=0, columnspan=2, sticky="w")
+    lic_lbl.grid(row=9, column=0, columnspan=2, sticky="w")
 
     def refresh_license():
         ok, msg, _ = licensing.status()
@@ -951,12 +1011,51 @@ def run_gui():
 
         threading.Thread(target=_chk, daemon=True).start()
 
+    def batch_window():
+        w = tk.Toplevel(root)
+        w.title("Batch readings (Task 2)")
+        w.transient(root)
+        f = ttk.Frame(w, padding=12)
+        f.pack(fill="both", expand=True)
+        b = load_config().get("batch") or {}
+        ttk.Label(f, wraplength=430, text="Values YOU enter from your test records. They are applied to every "
+                  "Task-2 patient that has no value in the CSV, for Diabetes, Oral and COPD. "
+                  "Hypertension is only filled if all three BP fields are given.").grid(row=0, column=0, columnspan=2, sticky="w")
+        v = {k: tk.StringVar(value=b.get(k, d)) for k, d in
+             (("fasting", "82"), ("pp", "82"), ("random", "82"), ("sys", ""), ("dia", ""), ("hr", ""))}
+        labels = (("fasting", "Fasting blood sugar"), ("pp", "Post-prandial sugar"), ("random", "Random sugar (mandatory)"),
+                  ("sys", "Systolic BP (optional)"), ("dia", "Diastolic BP (optional)"), ("hr", "Heart rate (optional)"))
+        for i, (k, lab) in enumerate(labels, start=1):
+            ttk.Label(f, text=lab).grid(row=i, column=0, sticky="w", pady=2)
+            ttk.Entry(f, textvariable=v[k], width=12).grid(row=i, column=1, sticky="w")
+        gd = tk.StringVar(value=b.get("glucoseDone", "yes"))
+        ttk.Label(f, text="Blood glucose test done?").grid(row=7, column=0, sticky="w", pady=2)
+        ttk.Combobox(f, textvariable=gd, values=["yes", "no"], state="readonly", width=9).grid(row=7, column=1, sticky="w")
+        ttk.Label(f, text="Oral: any issues = No, restricted mouth opening NOT ticked, status No Abnormality.\n"
+                  "COPD: cough = No, severity = 'Dyspnoea only with strenuous exercise'. HbA1c left empty.",
+                  foreground="#555").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
+        en, at = tk.BooleanVar(value=b.get("enabled", False)), tk.BooleanVar(value=b.get("attested", False))
+        ttk.Checkbutton(f, text="Use these batch readings in Task 2", variable=en).grid(row=9, column=0, columnspan=2, sticky="w")
+
+        def save():
+            nums = [v[k].get().strip() for k in ("fasting", "pp", "random")]
+            if en.get() and gd.get() == "yes" and not all(x.replace(".", "", 1).isdigit() and 20 <= float(x) <= 800 for x in nums):
+                return messagebox.showerror("Batch readings", "Fasting, post-prandial and random must be numbers (20-800).", parent=w)
+            c = load_config()
+            c["batch"] = {"enabled": en.get(), "attested": True, "glucoseDone": gd.get(), "copd": "0",
+                          **{k: v[k].get().strip() for k in v}}
+            save_config(c)
+            w.destroy()
+            log("Batch readings saved" + (" and ENABLED for Task 2." if en.get() else " (disabled)."))
+
+        ttk.Button(f, text="Save", command=save).grid(row=11, column=0, pady=10, sticky="w")
+
     stop_evt = threading.Event()
     decision = {"v": None}
     decision_evt = threading.Event()
 
     btns = ttk.Frame(frm)
-    btns.grid(row=6, column=0, columnspan=2, sticky="ew")
+    btns.grid(row=7, column=0, columnspan=2, sticky="ew")
     start_btn = ttk.Button(btns, text="Start")
     stop_btn = ttk.Button(btns, text="Stop", state="disabled")
     ok_btn = ttk.Button(btns, text="Submit this form", state="disabled")
@@ -964,7 +1063,8 @@ def run_gui():
     lic_btn = ttk.Button(btns, text="License / About", command=lambda: license_window())
     admin_btn = ttk.Button(btns, text="Admin", command=admin_window)
     upd_btn = ttk.Button(btns, text="Check for updates", command=lambda: check_updates(True))
-    for b in (start_btn, ok_btn, skip_btn, stop_btn, lic_btn, admin_btn, upd_btn):
+    batch_btn = ttk.Button(btns, text="Batch readings", command=batch_window)
+    for b in (start_btn, ok_btn, skip_btn, stop_btn, batch_btn, lic_btn, admin_btn, upd_btn):
         b.pack(side="left", padx=4)
 
     def decide(v):
@@ -995,7 +1095,7 @@ def run_gui():
 
     def start():
         c = load_config()
-        c.update(username=user_v.get().strip(), password=pw_v.get(),
+        c.update(username=user_v.get().strip(), password=pw_v.get(), health_infra=infra_v.get().strip(),
                  review_before_submit=review_v.get())
         try:
             c["max_patients"] = int(max_v.get() or 0)
@@ -1009,9 +1109,6 @@ def run_gui():
             user_cb.config(values=vault.usernames())
         overrides = load_overrides(csv_v.get()) if csv_v.get() else None
         c["task"] = "exam" if task_v.get() == TASKS[1] else "cbac"
-        if c["task"] == "exam" and not overrides:
-            return messagebox.showerror("CSV needed", "Task 2 needs a CSV with columns:\n"
-                                        "ekavach_id, height, weight\n(real measurements for each patient)")
         stop_evt.clear()
         start_btn.config(state="disabled")
         stop_btn.config(state="normal")
