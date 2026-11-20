@@ -106,34 +106,42 @@ Empty cells use the defaults. Only patients listed in the CSV are processed. See
 
 ## 5b. Task 2 - Examination (NCD Screening)
 
-Select **Task 2**. For each patient in your CSV the app opens **NCD Screening -> Examine -> Perform Screening**
-(a new browser tab) and completes the examination steps the portal is waiting for, saving each with
-**Save & Continue**. Steps, in the portal's order: **Personal History -> Hypertension -> Diabetes -> Oral -> Breast -> Cervical -> COPD**.
+Select **Task 2**. **No CSV is needed.** The app opens **NCD Screening -> Examine -> Perform Screening** (a new browser
+tab) for every patient whose *Examine* button is enabled, and completes the steps the portal is waiting for, saving
+each with **Save & Continue**. Steps, in the portal's order: **Personal History -> Hypertension -> Diabetes -> Oral ->
+Breast -> Cervical -> COPD** (Breast/Cervical exist for female patients only; the app checks which tabs each patient shows).
 
-**Resumable.** Some patients are partly examined. The app reads which step the portal is on and only does
-the unfinished steps from there (earlier ones are reported as "already recorded"). Only patients whose
-*Examine* button is enabled and who are in your CSV are processed.
+**Set-up (once):** type your **Health infrastructure name** (e.g. `Sanwli`) under the login, then open
+**Batch readings**, fill the values below, tick *Use these batch readings in Task 2* and Save.
 
-**Nothing is invented.** Every measurement and every clinical *Status* comes from your CSV.
-All CSV data is validated **before** anything is saved. If the portal reaches a step that your CSV has no data for,
-the app stops there and reports it (e.g. "stopped at Oral (no data for it in the CSV)"); it never guesses.
-The Admin history records the full set of values entered, per tab.
-
-| Step | CSV columns (all required unless noted) |
+| Batch readings field | Used for |
 |---|---|
-| Personal History (only if not yet done) | `height` (60-250), `weight` (10-150). Optional: 9 Yes/No columns `diagnosedForHypertension, diagnosedForDiabetes, diagnosedForHeartDisease, diagnosedForStroke, diagnosedForKidneyFailure, diagnosedForNonHealingWound, diagnosedForCopd, diagnosedForAsthama, diagnosedForOralCancer` (default **No**) |
-| Hypertension | `systolicBloodPressure`, `diastolicBloodPressure`, `heartRate`, `hypertensionStatus` |
-| Diabetes | `bloodSugar` (random), `diabetesStatus`. Optional: `fastingBloodSugar, postPrandialBloodSugar, hba1c, isRdk` |
-| Oral | `oralStatus`. Optional: `anyIssuesInMouth` (default No), `restrictedMouthOpening` (default No) |
-| Breast | `breastStatus`. Optional ticks (default No): `sizeChange, colorChange, painInBreast, nippleNotOnSameLevel, anyRetractionOfNipple, lymphadenopathy, dischargeFromNipple` |
-| Cervical | `cervicalStatus`. Optional Yes/No (default No): `excessiveBleedingDuringPeriods, bleedingBetweenPeriods, postmenopausalBleeding, bleedingAfterIntercourse, excessiveSmellingVaginalDischarge, trainedViaExamination, excessiveDischarge` |
+| Fasting / Post-prandial / Random sugar (defaults 82 / 82 / 82) | Diabetes tab. **Random is mandatory on the portal even when the test is marked No**, so these are always entered |
+| "Blood glucose test done?" answer (default **No**) | Passed on exactly as you choose |
+| Systolic / Diastolic BP, Heart rate (optional) | Hypertension tab - only done if all three are given |
+| Height cm / Weight kg (optional) | Personal History - used **only** if the portal shows N.A for that patient |
 
-**Status values:** Hypertension/Diabetes: `Suspected` or `No Abnormality Detected`. Oral/Breast/Cervical: also `Confirmed`.
-**Health Infrastructure** is the first option (e.g. "Sanwli") unless the CSV has `healthInfrastructure`.
-A tab is only processed if the CSV has at least one of its columns. Breast/Cervical exist for female patients only.
+Applied automatically (all statuses "No Abnormality Detected"): Personal History radios = No; Oral = no issues,
+"Restricted mouth opening" not ticked; Breast = nothing ticked; Cervical = all No; COPD = cough No, severity
+"Dyspnoea only with strenuous exercise"; HbA1C left empty. The portal's "Information for Patient" pop-up (shown
+after cough = No) is closed automatically before saving.
 
-**Not automated:** COPD tab, and the 16 numbered findings checkboxes inside the Oral tab (complete these manually).
-Use *Dry run* first: it fills everything it can and saves nothing. See `exam_example.csv`.
+**Resumable.** The app reads which step the portal is on and only does the unfinished steps from there. Steps the
+portal never offers (e.g. Oral already screened earlier) are simply not needed; when the portal returns to the patient
+list the examination is complete.
+
+**Nothing is invented.** Values come from the portal (height/weight), your Batch readings window, or an optional
+per-patient CSV (which overrides the batch for that patient). If there are no values for a step the app stops there and
+says so. The Admin history records every value entered. Use **Dry run** first: it fills everything and saves nothing.
+
+**Optional CSV** (`exam_example.csv`) - one row per patient, columns `ekavach_id` plus any of:
+`height, weight`, the nine personal-history Yes/No columns, `systolicBloodPressure, diastolicBloodPressure, heartRate,
+hypertensionStatus`, `bloodSugar, diabetesStatus, fastingBloodSugar, postPrandialBloodSugar, hba1c, isRdk`,
+`oralStatus, anyIssuesInMouth, restrictedMouthOpening`, `breastStatus` + 7 ticks, `cervicalStatus` + 7 Yes/No,
+`cough, copdSeverity`, `healthInfrastructure`. Status values: `Suspected` / `No Abnormality Detected` (Oral, Breast,
+Cervical also `Confirmed`).
+
+**Not automated:** the 16 numbered findings checkboxes inside the Oral tab.
 
 ---
 
@@ -286,7 +294,9 @@ Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
 | "Not activated" / Start greyed out | Activate a licence key (section 8) |
 | "licence issued for a different computer" | Key was generated for another Machine ID |
 | "Could not reach the eKavach login page" | Check internet / portal availability; the app retries 3× |
-| Login failed | Check username/password; delete and re-save the login |
+| Login failed | Check username/password; delete and re-save the login. If the message says the portal is having trouble, wait a few minutes (the app already retries 3x) |
+| Task 2 stops at Diabetes | Open **Batch readings**, enter Random sugar, tick *Use these batch readings* and Save (the app logs a note when it is empty) |
+| "no height/weight on the portal (N.A)" | Enter Height/Weight in Batch readings (used only for such patients) or use a CSV |
 | Patient marked **Failed** | Portal rejected the form (validation); open it manually to see the message |
 | Patient marked **Error** | See the Details column in Admin |
 | No browser launches | Install Chrome or Edge |
