@@ -318,6 +318,24 @@ class Runner:
 
 
     # ---- task 2: Personal history + examination (NCD Screening list) ------------
+    def load_all_rows(self, max_rounds=60):
+        """The NCD Screening list loads 10 more patients each time you scroll to its end - keep scrolling until
+        no new rows appear, so patients beyond the first 10 are not missed."""
+        pg, last = self.pg, -1
+        cnt = "()=>[...document.querySelectorAll('tbody tr')].filter(r=>r.offsetParent&&r.querySelector('button.dropdown-toggle')).length"
+        stable = 0
+        for _ in range(max_rounds):
+            n = pg.evaluate(cnt)
+            stable = stable + 1 if n == last else 0
+            if stable >= 2:
+                break
+            last = n
+            pg.evaluate("()=>{for(const e of document.querySelectorAll('*')){if(e.scrollHeight>e.clientHeight+20"
+                        "&&getComputedStyle(e).overflowY!='visible')e.scrollTop=e.scrollHeight}"
+                        "window.scrollTo(0,document.body.scrollHeight)}")
+            pg.wait_for_timeout(2000)
+        return last
+
     def screening_rows(self):
         """[(ekavach_id, name)] of NCD Screening rows whose Examine button is enabled."""
         return self.pg.evaluate("""()=>[...document.querySelectorAll('tbody tr')]
@@ -675,6 +693,7 @@ class Runner:
         limit = int(self.cfg.get("max_patients") or 0) or 10**9
         self.open_pending_list("NCD Screening", "button.dropdown-toggle:visible")
         self.pg.wait_for_timeout(4000)  # let the list finish rendering
+        self.load_all_rows()
         b = self.cfg.get("batch") or {}
         if not b.get("enabled") or not b.get("random"):
             self.log("NOTE: no Random sugar value is set in 'Batch readings' (or batch is switched off). The portal "
