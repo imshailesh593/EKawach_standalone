@@ -21,7 +21,7 @@ import licensing
 
 # Where updates are published (folder URL, no trailing file). Can be overridden in config.json
 # as "update_base_url". Empty = updates disabled.
-UPDATE_BASE_URL = ""
+UPDATE_BASE_URL = "https://github.com/imshailesh593/EKawach_standalone/releases/latest/download"
 UPDATE_PUBLIC_KEY_B64 = "5MbbZBC+605WFxAFx4LW3FoBV4yKKviyvZ0OmgaI1MU="
 MAX_INSTALLER_BYTES = 500 * 1024 * 1024
 

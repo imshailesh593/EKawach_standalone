@@ -222,17 +222,21 @@ new keys/updates for already-distributed copies (their public keys are baked in)
 4. On accept it downloads the installer, checks its **SHA-256**, then runs it silently (`/SILENT`), closes, and the installer relaunches the app. Windows will show a UAC prompt if the app was installed for all users.
 5. A tampered manifest, wrong hash, or non-HTTPS URL is rejected. (`http://127.0.0.1` is allowed for testing.)
 
-**One-time setup (required before distributing)**
-Set the update folder URL — either in `updater.py` (`UPDATE_BASE_URL = "https://your-host/ekavach"`) then rebuild,
-or per machine in `%APPDATA%\EkavachFiller\config.json` as `"update_base_url"`.
-**Clients built with an empty URL cannot update**, so set it before the first distribution.
+**Update host**
+From v1.0.1, `UPDATE_BASE_URL` in `updater.py` points at this repo's GitHub Releases
+(`https://github.com/imshailesh593/EKawach_standalone/releases/latest/download`), so clients read
+`stable.json` from the **latest** release and download the installer attached to that same release.
+A machine can override it in `%APPDATA%\EkavachFiller\config.json` as `"update_base_url"`.
+v1.0.0 was built with an empty URL, so v1.0.0 clients must install v1.0.1 by hand once.
 
 **Publishing an update**
-1. Edit `APP_VERSION` in `licensing.py` (e.g. `1.0.1`).
-2. Build: `powershell -ExecutionPolicy Bypass -File build_installer.ps1`
-3. Publish:
-   `python vendor_tools\publish_update.py --installer installer\output\EkavachFiller_Setup_1.0.1.exe --version 1.0.1 --notes "What changed" [--channel stable|beta] [--mandatory]`
-4. Upload both files from `vendor_tools\release\` to your update folder.
+1. Edit `APP_VERSION` in `licensing.py` (e.g. `1.0.2`).
+2. Build: `powershell -ExecutionPolicy Bypass -File build_installer.ps1`, or push to `main` and download the
+   `EkavachFiller-installer` artifact from the **Build Windows installer** GitHub Actions run.
+3. Sign:
+   `python vendor_tools\publish_update.py --installer installer\output\EkavachFiller_Setup_1.0.2.exe --version 1.0.2 --notes "What changed" [--channel stable|beta] [--mandatory]`
+4. Create a GitHub Release (tag `v1.0.2`) and attach **both** files from `vendor_tools\release\`
+   (the installer and `stable.json`). Mark it as the latest release.
 
 **Channels:** `"update_channel": "beta"` in a client's `config.json` makes it read `beta.json` instead of `stable.json` — use for testers.
 **Mandatory:** `--mandatory` removes the "later" choice; if the download fails, Start is disabled until it succeeds.

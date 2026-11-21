@@ -1,0 +1,50 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "*.py"
+      - "installer/**"
+      - "build_installer.ps1"
+      - "requirements.txt"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build exe + installer
+        shell: pwsh
+        run: |
+          ./build_installer.ps1
+          if (Test-Path build.log) { Get-Content build.log -Tail 40 }
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          Get-ChildItem installer\output\*.exe | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" | Tee-Object -Append installer\output\SHA256.txt
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EkavachFiller-installer
+          path: |
+            installer/output/*.exe
+            installer/output/SHA256.txt
+          if-no-files-found: error

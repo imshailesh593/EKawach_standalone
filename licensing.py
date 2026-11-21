@@ -16,7 +16,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 APP_NAME = "EkavachFiller"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 PUBLIC_KEY_B64 = "+g145/3eOo582/QbarfwqO2oaTzdlaikxZSxI9j8DRY="
 
 
